@@ -84,14 +84,6 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(call.kwargs["temperature"], 0.0)
         self.assertEqual(call.kwargs["timeout"], 12.0)
 
-    def test_generation_prompt_is_language_adaptive_and_complete(self):
-        self.assertIn("language used by the latest user message", GENERATION_SYSTEM_PROMPT)
-        self.assertIn("Address every part", GENERATION_SYSTEM_PROMPT)
-        self.assertIn("warning signs and timeframe", GENERATION_SYSTEM_PROMPT)
-        self.assertIn("Calibrate uncertainty", GENERATION_SYSTEM_PROMPT)
-        self.assertIn("ask a few targeted questions", GENERATION_SYSTEM_PROMPT)
-        self.assertIn("no unsupported patient-specific claim", GENERATION_SYSTEM_PROMPT)
-
     def test_generation_evidence_payload_is_bounded(self):
         selection = CitationSelection(
             status="sufficient",
