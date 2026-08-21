@@ -31,6 +31,12 @@ class Settings:
     max_retrieval_tokens: int = 2_048
     max_continuation_tokens: int = 2_048
     max_continuations: int = 1
+    # Long multi-turn conversations get one abstractive memory pass. Short public
+    # evaluation histories remain byte-for-byte unchanged.
+    history_compaction_threshold_chars: int = 14_000
+    max_compaction_input_chars: int = 28_000
+    max_compaction_tokens: int = 1_500
+    compaction_timeout_sec: int = 35
     # Leave response-serialization headroom inside CoEval's 180-second timeout.
     request_deadline_sec: int = 165
     retrieval_model_timeout_sec: int = 45

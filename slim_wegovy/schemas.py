@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class CitableItem(BaseModel):
     cite_uid: str
     relevance_score: float
+    memory: str = Field(default="", max_length=1_200)
 
 
 class CitationSelection(BaseModel):
@@ -22,7 +23,14 @@ def finalize_retrieval(
     note: str = "",
 ) -> CitationSelection:
     """Submit final citation selection and end the retrieval phase."""
-    parsed = [item if isinstance(item, CitableItem) else CitableItem(**item) for item in items]
+    parsed = []
+    for item in items:
+        if isinstance(item, CitableItem):
+            parsed.append(item)
+            continue
+        normalized = dict(item)
+        normalized["memory"] = str(normalized.get("memory", ""))[:1_200]
+        parsed.append(CitableItem(**normalized))
     return CitationSelection(status=status, items=parsed, note=note)
 
 

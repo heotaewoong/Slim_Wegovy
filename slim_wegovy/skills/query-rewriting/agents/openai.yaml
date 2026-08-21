@@ -1,0 +1,4 @@
+interface:
+  display_name: "Query Rewriting"
+  short_description: "Resolve ambiguity and plan evidence-focused medical answers"
+  default_prompt: "Use $query-rewriting to clarify and solve this medical request."

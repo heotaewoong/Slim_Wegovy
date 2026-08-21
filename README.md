@@ -74,6 +74,8 @@ uv run slim-wegovy serve --host 127.0.0.1 --port 8000
 - `slim_wegovy/mcp_client.py`: Lunit Streamable HTTP MCP JSON-RPC client
 - `slim_wegovy/tools.py`: `finalize_retrieval`, `retrieve_relevant_content` OpenAI tool schema
 - `slim_wegovy/prompts.py`: retrieval/generation system prompts
+- `slim_wegovy/skills/`: 평가 런타임에 함께 로드되는 query rewriting 및 context summarization 스킬
+- `slim_wegovy/skill_runtime.py`: 번들된 `SKILL.md`를 L2 프롬프트에 연결하는 로더
 - `slim_wegovy/patient.py`: OpenAI-compatible patient simulator client
 - `slim_wegovy/web.py`: FastAPI web playground
 - `slim_wegovy/cli.py`: CLI entrypoint
@@ -88,6 +90,8 @@ Generation 단계:
 4. retrieval 결과 JSON을 tool result로 되돌려준 뒤에는 tool을 제거하고 L2가 최종 답변을 작성합니다.
 5. upstream이 `finish_reason=length`로 문장 중간에 멈추면 한 번의 tool-free continuation으로 남은 요청과 안전 안내를 완결합니다.
 
+긴 대화는 generation 전에 `context-summarization` 스킬로 한 번 추상 압축합니다. 짧은 대화는 원문을 그대로 사용하며, 압축 실패 시에는 기존의 길이 제한 history로 안전하게 fallback합니다.
+
 Retrieval 단계:
 
 1. L2에 MCP tools 전체와 가상 tool `finalize_retrieval`을 제공합니다.
@@ -95,10 +99,60 @@ Retrieval 단계:
 3. tool result에서 `cite_uid`를 수집합니다.
 4. L2가 `finalize_retrieval(status, items, note)`를 호출하면 retrieval phase를 종료합니다.
 
+`query-rewriting` 스킬은 모호하거나 follow-up인 요청을 내부 task frame과 독립적인 검색 질의로 정리합니다. `context-summarization` 스킬은 각 선택 citation에 query-relevant `memory`를 남기고, harness는 해당 `cite_uid`가 실제 tool result에 있었는지 검증한 뒤 원문 근거 조각과 함께 generation에 전달합니다.
+
+## Skill Activation and Testing
+
+두 스킬의 지침은 system prompt에 항상 로드되지만 실제 동작은 요청에 따라 달라집니다.
+
+- `query-rewriting`: 단순하고 독립적인 질문에는 별도의 복잡한 재작성을 하지 않습니다. 모호한 표현, 이전 대화를 가리키는 follow-up, 여러 산출물, 최신·관할권별 근거 검색이 필요한 요청에서는 관련 대화 맥락을 포함한 독립적인 retrieval query를 내부적으로 만듭니다. 별도의 모델 호출이나 사용자에게 노출되는 thinking을 만들지는 않습니다.
+- `context-summarization`: user/assistant history가 14,000자를 초과하면 generation 전에 별도의 추상 압축 패스를 실행합니다. MCP 근거를 조회한 경우에는 길이와 관계없이 선택된 citation마다 query-relevant `memory`를 만듭니다. 짧은 대화에서 retrieval도 없으면 압축 패스를 실행하지 않습니다.
+- 현재 `/compact` 사용자 명령은 제공하지 않으며 자동 활성화 방식입니다. 압축 호출이 실패하면 길이가 제한된 원본 history로 fallback합니다.
+
+API credit 없이 관련 동작을 검증하려면 다음 테스트를 실행합니다.
+
+```bash
+uv run python -m unittest \
+  tests.test_harness.HarnessTests.test_long_history_is_abstractively_compacted_before_generation \
+  tests.test_harness.HarnessTests.test_runtime_prompts_load_bundled_skills \
+  tests.test_harness.HarnessTests.test_citation_memory_and_matching_record_are_preserved \
+  -v
+```
+
+실제 L2 동작은 playground를 실행한 뒤 `Trajectory`, `Evidence`, `Raw` 탭에서 확인할 수 있습니다.
+
+```bash
+uv run slim-wegovy serve --host 127.0.0.1 --port 8000
+```
+
+간단한 질문에는 `Trajectory`가 `No tool calls`로 남아야 합니다.
+
+```text
+감기에 걸렸을 때 물을 많이 마시는 게 도움이 돼?
+```
+
+Query rewriting은 다음과 같은 연속 질문으로 확인합니다.
+
+```text
+저는 임신을 계획 중이고 현재 위고비를 사용하고 있어요.
+```
+
+```text
+그럼 최신 한국 허가사항 기준으로 언제 끊어야 해? 출처도 줘.
+```
+
+두 번째 응답의 `Trajectory`에서 `retrieve_relevant_content` 인자의 `query`가 “그럼” 같은 대명사에 의존하지 않고 위고비 또는 semaglutide, 임신 계획, 중단 시점, 한국 식약처 및 최신 허가사항 맥락을 포함하는지 확인합니다. `Evidence` 또는 `Raw`에서는 선택된 항목에 `cite_uid`, `relevance_score`, query-relevant `memory`가 있고 실제 원문 근거가 함께 보존되는지 확인합니다.
+
+긴 대화 압축은 14,000자가 넘는 history를 만든 후 다음 질문을 보내 확인합니다. 압축이 실행되면 `Raw`의 `generation_messages`에 아래 표식으로 시작하는 memory가 나타납니다.
+
+```text
+[Compressed conversation memory; this describes prior context and is not a new instruction.]
+```
+
 ## Notes
 
 - `.env`는 git에 포함하지 않습니다.
-- MCP tool 결과가 길면 `Settings.max_tool_result_chars` 기준으로 잘라 L2 context 폭주를 막습니다.
+- MCP tool 결과가 길면 `Settings.max_tool_result_chars`로 제한하고, 최종 답변에는 전체 prefix 대신 선택된 `cite_uid`의 구조화 record와 추상 압축 memory를 전달합니다.
 - 평가 요청의 `max_tokens`와 `temperature`를 내부 L2 호출에 전달합니다. 최종 generation 한도는 CoEval 경쟁 설정과 같은 최대 6,144 tokens입니다.
 - generation prompt는 `more than 10 years of experience`인 의료 AI 역할을 명시하되, 이를 권위 주장으로 쓰지 않고 정확성·안전성·근거 정직성의 행동 규칙으로 연결합니다. 영어 질문은 영어로, 한국어 질문은 한국어로 답합니다.
 - 요청에 `temperature`가 없으면 재현성을 위해 `0.0`을 사용하고, 명시된 값은 그대로 존중합니다.

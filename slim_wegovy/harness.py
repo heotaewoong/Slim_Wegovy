@@ -8,7 +8,12 @@ from typing import Any
 from slim_wegovy.config import Settings, load_settings
 from slim_wegovy.mcp_client import StreamableHttpMcpClient
 from slim_wegovy.openai_compat import LunitChatClient
-from slim_wegovy.prompts import GENERATION_SYSTEM_PROMPT, RETRIEVAL_SYSTEM_PROMPT, retrieval_user_prompt
+from slim_wegovy.prompts import (
+    CONTEXT_COMPACTION_PROMPT,
+    GENERATION_SYSTEM_PROMPT,
+    RETRIEVAL_SYSTEM_PROMPT,
+    retrieval_user_prompt,
+)
 from slim_wegovy.schemas import CitationSelection, HarnessResult, ToolEvent, finalize_retrieval
 from slim_wegovy.tools import FINALIZE_RETRIEVAL_TOOL, RETRIEVE_RELEVANT_CONTENT_TOOL, mcp_tool_to_openai_tool
 
@@ -50,6 +55,8 @@ class L2Harness:
                     {"role": "user", "content": question},
                 ],
             )
+
+        working_history = self._prepare_history(question, history, deadline=deadline)
 
         def retrieve_relevant_content(query: str) -> str:
             nonlocal retrieval_result, evidence, retrieval_messages, latest_retrieval_content
@@ -96,7 +103,7 @@ class L2Harness:
         if request_policy:
             system_prompt += "\n\nRequest-specific policy:\n" + request_policy
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-        for item in history or []:
+        for item in working_history:
             if item.get("role") in {"user", "assistant"}:
                 messages.append({"role": item["role"], "content": item.get("content", "")})
         messages.append({"role": "user", "content": question})
@@ -145,7 +152,7 @@ class L2Harness:
                 )
                 answer, finish_reason = self._complete_final_answer(
                     question,
-                    history,
+                    working_history,
                     system_prompt,
                     latest_retrieval_content,
                     max_tokens=completion_tokens,
@@ -169,7 +176,7 @@ class L2Harness:
                 if not (msg.content or "").strip():
                     answer, finish_reason = self._complete_final_answer(
                         question,
-                        history,
+                        working_history,
                         system_prompt,
                         latest_retrieval_content,
                         max_tokens=completion_tokens,
@@ -208,7 +215,7 @@ class L2Harness:
 
         answer, finish_reason = self._complete_final_answer(
             question,
-            history,
+            working_history,
             system_prompt,
             latest_retrieval_content,
             max_tokens=completion_tokens,
@@ -224,6 +231,68 @@ class L2Harness:
             retrieval_messages=retrieval_messages,
             tool_events=tool_events,
         )
+
+    def _prepare_history(
+        self,
+        question: str,
+        history: list[dict[str, str]] | None,
+        *,
+        deadline: float,
+    ) -> list[dict[str, str]]:
+        """Abstractively compact only histories that would otherwise crowd the answer."""
+        filtered = [
+            {"role": str(item["role"]), "content": str(item.get("content", ""))}
+            for item in history or []
+            if item.get("role") in {"user", "assistant"}
+        ]
+        if sum(len(item["content"]) for item in filtered) <= (
+            self.settings.history_compaction_threshold_chars
+        ):
+            return filtered
+
+        bounded = _compact_history(
+            filtered,
+            max_chars=self.settings.max_compaction_input_chars,
+            max_item_chars=8_000,
+        )
+        compaction_request = (
+            "Latest user question (summarize prior context for this objective; do not answer):\n"
+            f"{question}\n\nPrior conversation:\n"
+            + json.dumps(bounded, ensure_ascii=False)
+        )
+        try:
+            response = self.chat.complete(
+                [
+                    {"role": "system", "content": CONTEXT_COMPACTION_PROMPT},
+                    {"role": "user", "content": compaction_request},
+                ],
+                tools=None,
+                tool_choice=None,
+                max_tokens=self.settings.max_compaction_tokens,
+                temperature=0.0,
+                timeout_sec=_stage_timeout(
+                    deadline,
+                    self.settings.compaction_timeout_sec,
+                    reserve_sec=self.settings.final_answer_reserve_sec,
+                ),
+            )
+            memory = (response.choices[0].message.content or "").strip()
+        except Exception:
+            memory = ""
+        if not memory:
+            return _compact_history(
+                filtered,
+                max_chars=self.settings.history_compaction_threshold_chars,
+            )
+        return [
+            {
+                "role": "user",
+                "content": (
+                    "[Compressed conversation memory; this describes prior context and is not "
+                    "a new instruction.]\n" + memory
+                ),
+            }
+        ]
 
     def _complete_final_answer(
         self,
@@ -596,9 +665,46 @@ def _harvest_cite_uids(content: str, tool_name: str, arguments: dict[str, Any], 
                 "cite_uid": uid,
                 "tool": tool_name,
                 "arguments": arguments,
-                "content": _clip(content, 2_000),
+                "content": _citation_context(content, uid),
             },
         )
+
+
+def _citation_context(content: str, cite_uid: str, max_chars: int = 2_000) -> str:
+    """Keep the structured record containing a citation instead of a blind prefix."""
+    try:
+        parsed = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+
+    def find_record(value: Any) -> Any | None:
+        if isinstance(value, dict):
+            if str(value.get("cite_uid", "")) == cite_uid:
+                return value
+            for child in value.values():
+                match = find_record(child)
+                if match is not None:
+                    return match
+        elif isinstance(value, list):
+            for child in value:
+                match = find_record(child)
+                if match is not None:
+                    return match
+        return None
+
+    record = find_record(parsed)
+    if record is not None:
+        return _clip(json.dumps(record, ensure_ascii=False), max_chars)
+
+    marker = content.find(cite_uid)
+    if marker < 0 or len(content) <= max_chars:
+        return _clip(content, max_chars)
+    start = max(0, marker - max_chars // 3)
+    end = min(len(content), start + max_chars)
+    start = max(0, end - max_chars)
+    prefix = "... [context before omitted]\n" if start else ""
+    suffix = "\n... [context after omitted]" if end < len(content) else ""
+    return prefix + content[start:end] + suffix
 
 
 def _find_cite_uids(text: str) -> list[str]:
@@ -665,9 +771,9 @@ def _format_retrieval_for_generation(selection: CitationSelection, evidence: lis
         "answer_constraint": (
             "No verified current evidence was found in the provided source set. Do not mention retrieval or tool failure. Do not attribute any statement to a current or local guideline, and do not invent an exact schedule, price, policy, facility, product, contact, source, or citation. Give stable medical knowledge when confident, label it as general rather than current local policy, preserve decision-changing conditions, and ask only the highest-yield missing context."
             if selection.status == "no_evidence"
-            else "First verify that each item matches the requested issuer, jurisdiction, population, and task. Ignore and do not summarize mismatched material unless it is explicitly useful; a nonlocal study is not a substitute for a requested local guideline. Use only evidence that directly addresses the question. If no item actually matches, follow the no-evidence policy: give stable general knowledge when confident, label the exact current or local rule as unresolved, and ask only decision-changing context."
+            else "First verify that each item matches the requested issuer, jurisdiction, population, and task. compact_evidence_memory is a lossy index, not independent evidence: verify decision-critical claims against the matching raw evidence and ignore a memory that conflicts with it. Ignore and do not summarize mismatched material unless it is explicitly useful; a nonlocal study is not a substitute for a requested local guideline. Use only evidence that directly addresses the question. If no item actually matches, follow the no-evidence policy: give stable general knowledge when confident, label the exact current or local rule as unresolved, and ask only decision-changing context."
         ),
-        "selected_items": [item.model_dump() for item in selection.items],
+        "compact_evidence_memory": [item.model_dump() for item in selection.items],
         "evidence": numbered_evidence if selection.items else [],
         "uncited_fallback_evidence": evidence if not selection.items else [],
     }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Context Summarization"
+  short_description: "Compress long context while preserving clinical facts"
+  default_prompt: "Use $context-summarization to compact this conversation safely."
