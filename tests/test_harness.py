@@ -5,6 +5,7 @@ from unittest.mock import Mock
 from slim_wegovy.config import Settings
 from slim_wegovy.harness import L2Harness, _format_retrieval_for_generation, _select_mcp_tools
 from slim_wegovy.openai_compat import LunitChatClient
+from slim_wegovy.prompts import GENERATION_SYSTEM_PROMPT
 from slim_wegovy.schemas import CitationSelection
 
 
@@ -46,6 +47,14 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(settings.generation_max_turns, 2)
         self.assertEqual(settings.lunit_timeout_sec, 60)
         self.assertEqual(settings.lunit_max_retries, 1)
+
+    def test_generation_prompt_is_language_adaptive_and_complete(self):
+        self.assertIn("language used by the latest user message", GENERATION_SYSTEM_PROMPT)
+        self.assertIn("Address every part", GENERATION_SYSTEM_PROMPT)
+        self.assertIn("warning signs and timeframe", GENERATION_SYSTEM_PROMPT)
+        self.assertIn("Calibrate uncertainty", GENERATION_SYSTEM_PROMPT)
+        self.assertIn("ask a few targeted questions", GENERATION_SYSTEM_PROMPT)
+        self.assertIn("no unsupported patient-specific claim", GENERATION_SYSTEM_PROMPT)
 
     def test_generation_evidence_payload_is_bounded(self):
         selection = CitationSelection(

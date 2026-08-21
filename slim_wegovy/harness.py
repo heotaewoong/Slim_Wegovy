@@ -113,9 +113,12 @@ class L2Harness:
                 {
                     "role": "user",
                     "content": (
-                        "아래 검색 결과만 근거로 사용해 최종 답변을 작성하세요. "
-                        "추가 도구는 호출할 수 없습니다. 근거가 부족하면 그 한계를 밝히고, "
-                        "반드시 비어 있지 않은 완결된 한국어 답변으로 끝내세요.\n\n"
+                        "Use the retrieved material below for source-specific factual claims. "
+                        "You may supplement it with established general medical knowledge only when "
+                        "confident and useful, but do not fill a source-specific gap by guessing. "
+                        "Clearly state any limitation or uncertainty and never invent a citation. "
+                        "No more tools are available. Return only a complete, non-empty final answer "
+                        "in the user's language.\n\n"
                         + retrieval_content
                     ),
                 }
@@ -124,7 +127,11 @@ class L2Harness:
             final_messages.append(
                 {
                     "role": "user",
-                    "content": "도구 없이 지금 최종 답변을 작성하세요. 반드시 비어 있지 않은 완결된 답변을 반환하세요.",
+                    "content": (
+                        "Write the final answer now without tools. Address every part of the request, "
+                        "follow the clinical communication rules, and return a complete, non-empty "
+                        "answer in the user's language."
+                    ),
                 }
             )
 
@@ -136,7 +143,10 @@ class L2Harness:
             final_messages.append(
                 {
                     "role": "user",
-                    "content": f"이전 응답이 비어 있었습니다(재시도 {attempt + 1}/2). 지금 완결된 최종 답변을 작성하세요.",
+                    "content": (
+                        f"The previous response was empty (retry {attempt + 1}/2). "
+                        "Return the complete final answer now."
+                    ),
                 }
             )
         raise RuntimeError("L2 returned an empty final answer after 2 attempts")
