@@ -19,17 +19,27 @@ from slim_wegovy.patient import PatientSimulator
 
 
 app = FastAPI(title="Slim Wegovy L2 Harness")
-_harness_lock = threading.Lock()
+_harness_local = threading.local()
 
 
-@lru_cache(maxsize=1)
 def _harness() -> L2Harness:
-    return L2Harness(load_settings())
+    harness = getattr(_harness_local, "default", None)
+    if harness is None:
+        harness = L2Harness(load_settings())
+        _harness_local.default = harness
+    return harness
 
 
-@lru_cache(maxsize=2)
 def _harness_with_key(api_key: str) -> L2Harness:
-    return L2Harness(load_settings(api_key_override=api_key))
+    keyed = getattr(_harness_local, "keyed", None)
+    if keyed is None:
+        keyed = {}
+        _harness_local.keyed = keyed
+    harness = keyed.get(api_key)
+    if harness is None:
+        harness = L2Harness(load_settings(api_key_override=api_key))
+        keyed[api_key] = harness
+    return harness
 
 
 @lru_cache(maxsize=1)
@@ -59,8 +69,7 @@ def index() -> str:
 
 @app.post("/api/ask")
 def ask(req: AskRequest) -> dict[str, Any]:
-    with _harness_lock:
-        return _harness().answer(req.question, history=req.history).model_dump()
+    return _harness().answer(req.question, history=req.history).model_dump()
 
 
 @app.post("/api/patient")
@@ -70,8 +79,7 @@ def patient(req: PatientRequest) -> dict[str, str]:
 
 @app.get("/api/tools")
 def tools() -> dict[str, Any]:
-    with _harness_lock:
-        return {"tools": _harness()._mcp_tools()}
+    return {"tools": _harness()._mcp_tools()}
 
 
 @app.get("/health")
@@ -106,10 +114,9 @@ def chat_completions(
         return _openai_error("The latest user message must contain text.", 400, "invalid_request_error")
 
     try:
-        with _harness_lock:
-            result = _request_harness(authorization).answer(
-                question, history=req.messages[:last_user_index]
-            )
+        result = _request_harness(authorization).answer(
+            question, history=req.messages[:last_user_index]
+        )
     except RuntimeError as exc:
         return _openai_error(str(exc), 500, "configuration_error")
     except Exception as exc:

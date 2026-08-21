@@ -1,11 +1,14 @@
 import os
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from slim_wegovy.web import app
+from slim_wegovy.web import ChatCompletionRequest, app, chat_completions
 from slim_wegovy.config import load_settings
 
 
@@ -76,6 +79,34 @@ class SubmissionApiTests(unittest.TestCase):
                     )
         self.assertEqual(response.status_code, 200)
         keyed.assert_called_once_with("injected-key")
+
+    def test_chat_completions_are_not_globally_serialized(self):
+        state_lock = threading.Lock()
+        start_barrier = threading.Barrier(4)
+        state = {"active": 0, "peak": 0}
+
+        class ConcurrentHarness:
+            def answer(self, question, history):
+                start_barrier.wait(timeout=2)
+                with state_lock:
+                    state["active"] += 1
+                    state["peak"] = max(state["peak"], state["active"])
+                time.sleep(0.05)
+                with state_lock:
+                    state["active"] -= 1
+                return SimpleNamespace(answer="ok")
+
+        request = ChatCompletionRequest(
+            messages=[{"role": "user", "content": "동시 요청"}]
+        )
+        with patch("slim_wegovy.web._request_harness", return_value=ConcurrentHarness()):
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                responses = list(
+                    executor.map(lambda _: chat_completions(request), range(4))
+                )
+
+        self.assertEqual(len(responses), 4)
+        self.assertEqual(state["peak"], 4)
 
     def test_rejects_empty_messages(self):
         with TestClient(app) as client:
