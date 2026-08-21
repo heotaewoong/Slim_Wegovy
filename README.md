@@ -11,13 +11,14 @@ L2는 범용 chat model처럼 한 번 호출해서 끝내는 모델이 아니라
 
 ## Setup
 
-`.env`에 다음 값이 필요합니다.
+`.env`에는 API key가 필요합니다. 나머지는 아래 값이 기본값입니다.
 
 ```bash
 LUNIT_FM_API_URL=https://model.hackathon.lunit.io
 LUNIT_FM_API_KEY=...
 LUNIT_FM_MODEL=Lunit/L2-preview
 LUNIT_MCP_URL=https://mcp.hackathon.lunit.io/mcp
+MCP_PROTOCOL_VERSION=2025-06-18
 ```
 
 설치:
@@ -98,3 +99,34 @@ Retrieval 단계:
 - `.env`는 git에 포함하지 않습니다.
 - MCP tool 결과가 길면 `Settings.max_tool_result_chars` 기준으로 잘라 L2 context 폭주를 막습니다.
 - 현재 baseline은 citation text를 MCP 결과에서 best-effort로 수집합니다. tool별 결과 shape가 안정적으로 확인되면 `cite_uid` 파싱과 evidence normalization을 더 정교하게 분리하는 것이 다음 개선 지점입니다.
+
+## Hackathon Submission
+
+제출 container는 OpenAI-compatible API를 제공합니다.
+
+- `GET /v1/models`
+- `POST /v1/chat/completions`
+- 일반 JSON 및 `stream: true` SSE 응답
+- `GET /health`
+
+로컬 build 및 실행:
+
+```bash
+docker build -t slim-wegovy:local .
+docker run --rm -p 8000:8000 \
+  -e LUNIT_FM_API_KEY="lunit_..." \
+  slim-wegovy:local
+```
+
+제출값:
+
+- Branch: `lunit/hackathon-submission`
+- Server: `0.0.0.0:8000`
+- Model: `Lunit/L2-preview`
+- Dashboard에는 최종 검증한 branch HEAD의 40자리 전체 SHA를 입력합니다.
+
+API credit을 사용하지 않는 test:
+
+```bash
+python -m unittest discover -s tests -v
+```

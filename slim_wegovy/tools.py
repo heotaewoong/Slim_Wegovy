@@ -8,10 +8,28 @@ def mcp_tool_to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
         "type": "function",
         "function": {
             "name": tool["name"],
-            "description": tool.get("description", ""),
-            "parameters": tool.get("inputSchema", {"type": "object", "properties": {}}),
+            "description": str(tool.get("description", ""))[:600],
+            "parameters": _compact_schema(
+                tool.get("inputSchema", {"type": "object", "properties": {}})
+            ),
         },
     }
+
+
+def _compact_schema(value: Any) -> Any:
+    if isinstance(value, dict):
+        compacted = {}
+        for key, item in value.items():
+            if key in {"examples", "$schema", "$id"}:
+                continue
+            if key == "description" and isinstance(item, str):
+                compacted[key] = item[:300]
+            else:
+                compacted[key] = _compact_schema(item)
+        return compacted
+    if isinstance(value, list):
+        return [_compact_schema(item) for item in value]
+    return value
 
 
 FINALIZE_RETRIEVAL_TOOL: dict[str, Any] = {

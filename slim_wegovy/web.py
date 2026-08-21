@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import json
+import os
+import threading
+import time
+import uuid
+from collections.abc import Iterator
+from functools import lru_cache
 from typing import Any
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Header
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from slim_wegovy.config import load_settings
@@ -12,9 +19,32 @@ from slim_wegovy.patient import PatientSimulator
 
 
 app = FastAPI(title="Slim Wegovy L2 Harness")
-_settings = load_settings()
-_harness = L2Harness(_settings)
-_patient = PatientSimulator(_settings)
+_harness_local = threading.local()
+
+
+def _harness() -> L2Harness:
+    harness = getattr(_harness_local, "default", None)
+    if harness is None:
+        harness = L2Harness(load_settings())
+        _harness_local.default = harness
+    return harness
+
+
+def _harness_with_key(api_key: str) -> L2Harness:
+    keyed = getattr(_harness_local, "keyed", None)
+    if keyed is None:
+        keyed = {}
+        _harness_local.keyed = keyed
+    harness = keyed.get(api_key)
+    if harness is None:
+        harness = L2Harness(load_settings(api_key_override=api_key))
+        keyed[api_key] = harness
+    return harness
+
+
+@lru_cache(maxsize=1)
+def _patient() -> PatientSimulator:
+    return PatientSimulator(load_settings())
 
 
 class AskRequest(BaseModel):
@@ -26,6 +56,12 @@ class PatientRequest(BaseModel):
     history: list[dict[str, str]] = Field(default_factory=list)
 
 
+class ChatCompletionRequest(BaseModel):
+    model: str | None = None
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    stream: bool = False
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     return HTML
@@ -33,17 +69,135 @@ def index() -> str:
 
 @app.post("/api/ask")
 def ask(req: AskRequest) -> dict[str, Any]:
-    return _harness.answer(req.question, history=req.history).model_dump()
+    return _harness().answer(req.question, history=req.history).model_dump()
 
 
 @app.post("/api/patient")
 def patient(req: PatientRequest) -> dict[str, str]:
-    return {"question": _patient.next_question(req.history)}
+    return {"question": _patient().next_question(req.history)}
 
 
 @app.get("/api/tools")
 def tools() -> dict[str, Any]:
-    return {"tools": _harness._mcp_tools()}
+    return {"tools": _harness()._mcp_tools()}
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "model": _model_name()}
+
+
+@app.get("/v1/models")
+def models() -> dict[str, Any]:
+    return {
+        "object": "list",
+        "data": [{"id": _model_name(), "object": "model", "created": 0, "owned_by": "lunit"}],
+    }
+
+
+@app.post("/v1/chat/completions")
+def chat_completions(
+    req: ChatCompletionRequest,
+    authorization: str | None = Header(default=None),
+):
+    if not req.messages:
+        return _openai_error("'messages' must be a non-empty array.", 400, "invalid_request_error")
+    last_user_index = next(
+        (index for index in range(len(req.messages) - 1, -1, -1)
+         if req.messages[index].get("role") == "user"),
+        None,
+    )
+    if last_user_index is None:
+        return _openai_error("'messages' must contain a user message.", 400, "invalid_request_error")
+    question = req.messages[last_user_index].get("content")
+    if not isinstance(question, str) or not question.strip():
+        return _openai_error("The latest user message must contain text.", 400, "invalid_request_error")
+
+    try:
+        result = _request_harness(authorization).answer(
+            question, history=req.messages[:last_user_index]
+        )
+    except RuntimeError as exc:
+        return _openai_error(str(exc), 500, "configuration_error")
+    except Exception as exc:
+        return _openai_error(f"L2 harness failed: {exc}", 502, "upstream_error")
+
+    completion = {
+        "id": f"chatcmpl-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": _model_name(),
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": result.answer},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+    if req.stream:
+        return StreamingResponse(
+            _completion_events(completion),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+    return JSONResponse(completion)
+
+
+def _model_name() -> str:
+    return os.environ.get("LUNIT_FM_MODEL", "Lunit/L2-preview")
+
+
+def _request_harness(authorization: str | None) -> L2Harness:
+    try:
+        return _harness()
+    except RuntimeError as exc:
+        token = _bearer_token(authorization)
+        if token and "LUNIT_FM_API_KEY" in str(exc):
+            return _harness_with_key(token)
+        raise
+
+
+def _bearer_token(authorization: str | None) -> str:
+    if not authorization:
+        return ""
+    scheme, separator, token = authorization.partition(" ")
+    if not separator or scheme.casefold() != "bearer":
+        return ""
+    return token.strip()
+
+
+def _openai_error(message: str, status_code: int, error_type: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": {"message": message, "type": error_type, "param": None, "code": None}},
+    )
+
+
+def _completion_events(completion: dict[str, Any]) -> Iterator[str]:
+    base = {
+        "id": completion["id"],
+        "object": "chat.completion.chunk",
+        "created": completion["created"],
+        "model": completion["model"],
+    }
+    first = {**base, "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]}
+    second = {
+        **base,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"content": completion["choices"][0]["message"]["content"]},
+                "finish_reason": "stop",
+            }
+        ],
+    }
+    yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
+    yield f"data: {json.dumps(second, ensure_ascii=False)}\n\n"
+    usage = {**base, "choices": [], "usage": completion["usage"]}
+    yield f"data: {json.dumps(usage, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
 
 
 HTML = """<!doctype html>
