@@ -19,14 +19,28 @@ class Settings:
     patient_api_url: str = "https://patient.hackathon.lunit.io"
     patient_model: str = "patient-simulator-ko"
     mcp_protocol_version: str = "2025-06-18"
-    retrieval_max_turns: int = 4
+    # One evidence call followed by a finalize call keeps current-fact lookups
+    # useful without consuming CoEval's 180-second request budget.
+    retrieval_max_turns: int = 2
     generation_max_turns: int = 2
     max_tool_result_chars: int = 3_500
-    max_completion_tokens: int = 1_024
-    lunit_timeout_sec: int = 60
-    lunit_max_retries: int = 1
-    mcp_tool_timeout_sec: int = 45
-    mcp_request_timeout_sec: int = 30
+    # CoEval's Conquer splits request 6,144 tokens because L2 reasoning tokens
+    # share the same budget. A smaller internal cap silently truncates otherwise
+    # valid HealthBench answers and the evaluator grades that partial text.
+    max_completion_tokens: int = 6_144
+    max_retrieval_tokens: int = 2_048
+    max_continuation_tokens: int = 2_048
+    max_continuations: int = 1
+    # Leave response-serialization headroom inside CoEval's 180-second timeout.
+    request_deadline_sec: int = 165
+    retrieval_model_timeout_sec: int = 45
+    final_answer_reserve_sec: int = 55
+    lunit_timeout_sec: int = 120
+    # CoEval already retries candidate inference. Nested long retries can exceed
+    # its 180-second request timeout and amplify load under 16-way concurrency.
+    lunit_max_retries: int = 0
+    mcp_tool_timeout_sec: int = 30
+    mcp_request_timeout_sec: int = 15
 
 
 def load_settings(api_key_override: str | None = None) -> Settings:

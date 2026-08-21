@@ -60,6 +60,8 @@ class ChatCompletionRequest(BaseModel):
     model: str | None = None
     messages: list[dict[str, Any]] = Field(default_factory=list)
     stream: bool = False
+    max_tokens: int | None = Field(default=None, ge=1, le=32_768)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -115,7 +117,10 @@ def chat_completions(
 
     try:
         result = _request_harness(authorization).answer(
-            question, history=req.messages[:last_user_index]
+            question,
+            history=req.messages[:last_user_index],
+            max_tokens=req.max_tokens,
+            temperature=req.temperature,
         )
     except RuntimeError as exc:
         return _openai_error(str(exc), 500, "configuration_error")
@@ -131,7 +136,7 @@ def chat_completions(
             {
                 "index": 0,
                 "message": {"role": "assistant", "content": result.answer},
-                "finish_reason": "stop",
+                "finish_reason": getattr(result, "finish_reason", "stop"),
             }
         ],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
@@ -189,7 +194,7 @@ def _completion_events(completion: dict[str, Any]) -> Iterator[str]:
             {
                 "index": 0,
                 "delta": {"content": completion["choices"][0]["message"]["content"]},
-                "finish_reason": "stop",
+                "finish_reason": completion["choices"][0]["finish_reason"],
             }
         ],
     }

@@ -24,10 +24,11 @@ class SubmissionApiTests(unittest.TestCase):
         captured = {}
 
         class FakeHarness:
-            def answer(self, question, history):
+            def answer(self, question, history, **kwargs):
                 captured["question"] = question
                 captured["history"] = history
-                return SimpleNamespace(answer="17입니다.")
+                captured.update(kwargs)
+                return SimpleNamespace(answer="17입니다.", finish_reason="stop")
 
         messages = [
             {"role": "user", "content": "17을 기억해."},
@@ -36,15 +37,24 @@ class SubmissionApiTests(unittest.TestCase):
         ]
         with patch("slim_wegovy.web._harness", return_value=FakeHarness()):
             with TestClient(app) as client:
-                response = client.post("/v1/chat/completions", json={"messages": messages})
+                response = client.post(
+                    "/v1/chat/completions",
+                    json={"messages": messages, "max_tokens": 6144, "temperature": 0},
+                )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["choices"][0]["message"]["content"], "17입니다.")
         self.assertEqual(response.json()["usage"]["total_tokens"], 0)
         self.assertEqual(captured["question"], messages[-1]["content"])
         self.assertEqual(captured["history"], messages[:-1])
+        self.assertEqual(captured["max_tokens"], 6144)
+        self.assertEqual(captured["temperature"], 0.0)
 
     def test_streaming_wraps_final_l2_answer(self):
-        fake = SimpleNamespace(answer=lambda question, history: SimpleNamespace(answer="안녕하세요."))
+        fake = SimpleNamespace(
+            answer=lambda question, history, **kwargs: SimpleNamespace(
+                answer="안녕하세요.", finish_reason="length"
+            )
+        )
         with patch("slim_wegovy.web._harness", return_value=fake):
             with TestClient(app) as client:
                 with client.stream(
@@ -55,6 +65,7 @@ class SubmissionApiTests(unittest.TestCase):
                     content = "".join(response.iter_text())
         self.assertEqual(response.status_code, 200)
         self.assertIn("안녕하세요.", content)
+        self.assertIn('"finish_reason": "length"', content)
         self.assertIn('"usage"', content)
         self.assertIn("data: [DONE]", content)
 
@@ -68,7 +79,11 @@ class SubmissionApiTests(unittest.TestCase):
         self.assertEqual(settings.lunit_api_key, "alias-key")
 
     def test_uses_inbound_bearer_when_environment_key_is_missing(self):
-        fake = SimpleNamespace(answer=lambda question, history: SimpleNamespace(answer="ok"))
+        fake = SimpleNamespace(
+            answer=lambda question, history, **kwargs: SimpleNamespace(
+                answer="ok", finish_reason="stop"
+            )
+        )
         with patch("slim_wegovy.web._harness", side_effect=RuntimeError("Missing required environment variable(s): LUNIT_FM_API_KEY")):
             with patch("slim_wegovy.web._harness_with_key", return_value=fake) as keyed:
                 with TestClient(app) as client:
@@ -86,7 +101,7 @@ class SubmissionApiTests(unittest.TestCase):
         state = {"active": 0, "peak": 0}
 
         class ConcurrentHarness:
-            def answer(self, question, history):
+            def answer(self, question, history, **kwargs):
                 start_barrier.wait(timeout=2)
                 with state_lock:
                     state["active"] += 1
@@ -94,7 +109,7 @@ class SubmissionApiTests(unittest.TestCase):
                 time.sleep(0.05)
                 with state_lock:
                     state["active"] -= 1
-                return SimpleNamespace(answer="ok")
+                return SimpleNamespace(answer="ok", finish_reason="stop")
 
         request = ChatCompletionRequest(
             messages=[{"role": "user", "content": "동시 요청"}]

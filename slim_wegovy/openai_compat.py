@@ -25,14 +25,25 @@ class LunitChatClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = "auto",
         max_retries: int | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        timeout_sec: float | None = None,
     ) -> Any:
         if max_retries is None:
             max_retries = self.settings.lunit_max_retries
+        if max_tokens is None:
+            max_tokens = self.settings.max_completion_tokens
+        if max_tokens < 1:
+            raise ValueError("max_tokens must be positive")
         params: dict[str, Any] = {
             "model": self.settings.lunit_model,
             "messages": messages,
-            "max_tokens": self.settings.max_completion_tokens,
+            "max_tokens": max_tokens,
         }
+        if temperature is not None:
+            params["temperature"] = temperature
+        if timeout_sec is not None:
+            params["timeout"] = max(1.0, float(timeout_sec))
         if tools is not None:
             params["tools"] = tools
             params["tool_choice"] = tool_choice or "auto"
