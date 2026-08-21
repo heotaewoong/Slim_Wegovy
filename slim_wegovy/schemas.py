@@ -36,6 +36,7 @@ class ToolEvent(BaseModel):
 
 class HarnessResult(BaseModel):
     answer: str
+    finish_reason: str = "stop"
     retrieval: CitationSelection | None = None
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     generation_messages: list[dict[str, Any]] = Field(default_factory=list)

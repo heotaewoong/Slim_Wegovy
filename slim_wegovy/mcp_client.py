@@ -59,12 +59,14 @@ class StreamableHttpMcpClient:
             if not cursor:
                 return tools
 
-    def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
+    def call_tool(
+        self, name: str, arguments: dict[str, Any], timeout_sec: float | None = None
+    ) -> str:
         self.initialize()
         result = self._request(
             "tools/call",
             {"name": name, "arguments": arguments},
-            timeout=self.settings.mcp_tool_timeout_sec,
+            timeout=timeout_sec or self.settings.mcp_tool_timeout_sec,
         )
         chunks: list[str] = []
         content = stringify_mcp_content(result.get("content", []))
@@ -91,7 +93,10 @@ class StreamableHttpMcpClient:
         return headers
 
     def _request(
-        self, method: str, params: dict[str, Any] | None = None, timeout: int | None = None
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         if timeout is None:
             timeout = self.settings.mcp_request_timeout_sec
