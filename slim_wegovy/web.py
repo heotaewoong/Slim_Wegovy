@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import time
+import uuid
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -26,6 +28,60 @@ class PatientRequest(BaseModel):
     history: list[dict[str, str]] = Field(default_factory=list)
 
 
+class OpenAIChatRequest(BaseModel):
+    model: str | None = None
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    stream: bool = False
+
+
+@app.get("/v1/models")
+def list_models() -> dict[str, Any]:
+    """Expose the configured driver model through the OpenAI-compatible API."""
+    model = _settings.lunit_model
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": model,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "lunit-hackathon-driver",
+            }
+        ],
+    }
+
+
+@app.post("/v1/chat/completions")
+def chat_completions(req: OpenAIChatRequest) -> dict[str, Any]:
+    """Run one evaluator turn while retaining the supplied conversation context."""
+    if req.stream:
+        raise HTTPException(status_code=400, detail="stream=true is not supported")
+    messages = _clean_openai_messages(req.messages)
+    user_indexes = [index for index, item in enumerate(messages) if item["role"] == "user"]
+    if not user_indexes:
+        raise HTTPException(status_code=400, detail="messages must contain at least one user message")
+
+    question_index = user_indexes[-1]
+    question = messages[question_index]["content"]
+    history = messages[:question_index]
+    result = _harness.answer(question, history=history)
+    response_id = f"chatcmpl-{uuid.uuid4().hex}"
+    return {
+        "id": response_id,
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": req.model or _settings.lunit_model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": result.answer},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     return HTML
@@ -33,7 +89,14 @@ def index() -> str:
 
 @app.post("/api/ask")
 def ask(req: AskRequest) -> dict[str, Any]:
-    return _harness.answer(req.question, history=req.history).model_dump()
+    history = _clean_history(req.history)
+    result = _harness.answer(req.question, history=history).model_dump()
+    result["history"] = [
+        *history,
+        {"role": "user", "content": req.question},
+        {"role": "assistant", "content": result.get("answer", "")},
+    ]
+    return result
 
 
 @app.post("/api/patient")
@@ -44,6 +107,27 @@ def patient(req: PatientRequest) -> dict[str, str]:
 @app.get("/api/tools")
 def tools() -> dict[str, Any]:
     return {"tools": _harness._mcp_tools()}
+
+
+def _clean_history(history: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [
+        {"role": item["role"], "content": item.get("content", "")}
+        for item in history
+        if item.get("role") in {"user", "assistant"} and not item.get("pending")
+    ]
+
+
+def _clean_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    cleaned: list[dict[str, str]] = []
+    for item in messages:
+        role = item.get("role")
+        if role not in {"system", "user", "assistant"}:
+            continue
+        content = item.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        cleaned.append({"role": role, "content": content})
+    return cleaned
 
 
 HTML = """<!doctype html>
@@ -230,6 +314,7 @@ HTML = """<!doctype html>
     const clearBtn = document.querySelector("#clearBtn");
     const panel = document.querySelector("#panel");
     const tabs = [...document.querySelectorAll(".tab")];
+    const storageKey = "slim_wegovy_history";
     let history = [];
     let lastResult = null;
     let activeTab = "trajectory";
@@ -281,9 +366,15 @@ HTML = """<!doctype html>
         });
         if (!res.ok) throw new Error(await res.text());
         lastResult = await res.json();
-        replacePendingAssistant(lastResult.answer || "");
+        history = normalizeHistory(lastResult.history || [
+          ...prior,
+          {role: "user", content: question},
+          {role: "assistant", content: lastResult.answer || ""}
+        ]);
+        saveHistory();
       } catch (err) {
         replacePendingAssistant(`오류: ${err.message}`);
+        saveHistory();
       } finally {
         stopResponseTimer();
         renderChat();
@@ -321,6 +412,7 @@ HTML = """<!doctype html>
     clearBtn.addEventListener("click", () => {
       history = [];
       lastResult = null;
+      saveHistory();
       renderChat();
       renderPanel();
     });
@@ -364,6 +456,24 @@ HTML = """<!doctype html>
       }
     }
 
+    function normalizeHistory(items) {
+      return (items || [])
+        .filter(m => (m.role === "user" || m.role === "assistant") && !m.pending)
+        .map(m => ({role: m.role, content: String(m.content || "")}));
+    }
+
+    function saveHistory() {
+      window.localStorage.setItem(storageKey, JSON.stringify(normalizeHistory(history)));
+    }
+
+    function loadHistory() {
+      try {
+        history = normalizeHistory(JSON.parse(window.localStorage.getItem(storageKey) || "[]"));
+      } catch {
+        history = [];
+      }
+    }
+
     function findLastPendingIndex() {
       for (let i = history.length - 1; i >= 0; i--) {
         if (history[i].pending) return i;
@@ -377,6 +487,8 @@ HTML = """<!doctype html>
       }[s]));
     }
 
+    loadHistory();
+    renderChat();
     renderPanel();
   </script>
 </body>
