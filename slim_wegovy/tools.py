@@ -52,8 +52,17 @@ FINALIZE_RETRIEVAL_TOOL: dict[str, Any] = {
                         "properties": {
                             "cite_uid": {"type": "string"},
                             "relevance_score": {"type": "number"},
+                            "memory": {
+                                "type": "string",
+                                "maxLength": 1200,
+                                "description": (
+                                    "Faithful abstractive memory of only the query-relevant "
+                                    "claim, applicable population/conditions, exact key values "
+                                    "or exceptions, provenance, and limitations in this citation."
+                                ),
+                            },
                         },
-                        "required": ["cite_uid", "relevance_score"],
+                        "required": ["cite_uid", "relevance_score", "memory"],
                     },
                     "description": "Citation-capable items selected from tool results.",
                 },

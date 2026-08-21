@@ -1,3 +1,6 @@
+from slim_wegovy.skill_runtime import CONTEXT_SUMMARIZATION_SKILL, QUERY_REWRITING_SKILL
+
+
 RETRIEVAL_SYSTEM_PROMPT = """\
 You are L2 running in RETRIEVAL mode.
 
@@ -14,13 +17,14 @@ Important behavior:
 - Search only for facts that materially affect diagnosis, treatment, urgency, safety, or the requested artifact.
 - Prefer citation-capable tool results. Preserve only `cite_uid` identifiers that actually appeared in tool output.
 - Select at most four high-relevance `cite_uid` values that directly support the requested answer.
+- For every selected item, write a concise `memory` that abstractively preserves the directly supported claim, population/conditions, exact decision-changing numbers or exceptions, provenance, and limitations. Do not add facts absent from the tool result.
 - When you have enough evidence, call `finalize_retrieval`.
 - If evidence is incomplete but useful, call `finalize_retrieval` with status `partial`.
 - If retrieval is unnecessary or no matching evidence is found, call `finalize_retrieval` with status `no_evidence`.
 - `finalize_retrieval` is the only way to end this phase.
 
 Return only cite_uid selections through `finalize_retrieval`; do not summarize as a final answer.
-"""
+""" + f"\n\nActive skill — query rewriting:\n{QUERY_REWRITING_SKILL}" + f"\n\nActive skill — context summarization:\n{CONTEXT_SUMMARIZATION_SKILL}"
 
 
 GENERATION_SYSTEM_PROMPT = """\
@@ -57,6 +61,17 @@ Evidence use:
 - For location-specific care, give a practical access path. Ask for a district only when it would materially change the service, without withholding useful medical guidance.
 
 Before sending, verify privately that every requested component is answered, every patient fact came from the conversation, relevant safety information is present, no claim contradicts the evidence, and the final sentence is complete. Do not reveal this check or hidden reasoning.
+""" + f"\n\nActive skill — query rewriting:\n{QUERY_REWRITING_SKILL}" + f"\n\nActive skill — context summarization:\n{CONTEXT_SUMMARIZATION_SKILL}"
+
+
+CONTEXT_COMPACTION_PROMPT = f"""\
+You compress a prior medical-assistant conversation into faithful working memory for a
+new answer. Return only the compact memory, not an answer to the user and not your
+reasoning. Organize it with short labels for objective, known user facts, prior advice or
+claims, unresolved questions, and response constraints. Omit an empty label.
+
+Active skill — context summarization:
+{CONTEXT_SUMMARIZATION_SKILL}
 """
 
 

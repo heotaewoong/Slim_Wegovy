@@ -5,6 +5,7 @@ from unittest.mock import ANY, Mock
 from slim_wegovy.config import Settings
 from slim_wegovy.harness import (
     L2Harness,
+    _citation_context,
     _compact_history,
     _format_retrieval_for_generation,
     _select_mcp_tools,
@@ -13,7 +14,7 @@ from slim_wegovy.harness import (
     _validated_selection,
 )
 from slim_wegovy.openai_compat import LunitChatClient
-from slim_wegovy.prompts import GENERATION_SYSTEM_PROMPT
+from slim_wegovy.prompts import GENERATION_SYSTEM_PROMPT, RETRIEVAL_SYSTEM_PROMPT
 from slim_wegovy.schemas import CitationSelection, finalize_retrieval
 
 
@@ -116,6 +117,12 @@ class HarnessTests(unittest.TestCase):
     def test_generation_prompt_records_requested_medical_ai_experience(self):
         self.assertIn("more than 10 years of experience", GENERATION_SYSTEM_PROMPT)
         self.assertIn("give the safest useful conditional guidance first", GENERATION_SYSTEM_PROMPT)
+
+    def test_runtime_prompts_load_bundled_skills(self):
+        self.assertIn("Active skill — query rewriting", GENERATION_SYSTEM_PROMPT)
+        self.assertIn("private task frame", GENERATION_SYSTEM_PROMPT)
+        self.assertIn("Active skill — context summarization", RETRIEVAL_SYSTEM_PROMPT)
+        self.assertIn("decision-changing values exactly", RETRIEVAL_SYSTEM_PROMPT)
 
     def test_drug_query_routes_to_small_relevant_tool_set(self):
         available = [
@@ -450,6 +457,61 @@ class HarnessTests(unittest.TestCase):
         )
         self.assertEqual([item.cite_uid for item in validated.items], ["real"])
         self.assertEqual(validated.status, "partial")
+
+    def test_citation_memory_and_matching_record_are_preserved(self):
+        raw = (
+            '{"results":['
+            '{"cite_uid":"other","content":"irrelevant"},'
+            '{"cite_uid":"target","content":"Adults: 2.4 mg once weekly; '
+            'pregnancy is excluded."}]}'
+        )
+        excerpt = _citation_context(raw, "target")
+        self.assertIn("2.4 mg once weekly", excerpt)
+        self.assertNotIn("irrelevant", excerpt)
+
+        selection = finalize_retrieval(
+            "sufficient",
+            [
+                {
+                    "cite_uid": "target",
+                    "relevance_score": 0.95,
+                    "memory": "Adults: 2.4 mg once weekly; pregnancy excluded.",
+                }
+            ],
+        )
+        rendered = _format_retrieval_for_generation(
+            selection, [{"cite_uid": "target", "content": excerpt}]
+        )
+        self.assertIn("compact_evidence_memory", rendered)
+        self.assertIn("pregnancy excluded", rendered)
+
+    def test_long_history_is_abstractively_compacted_before_generation(self):
+        settings = Settings(
+            lunit_api_url="https://model.example",
+            lunit_api_key="lunit_test",
+            lunit_model="Lunit/L2-preview",
+            mcp_url="https://mcp.example/mcp",
+            history_compaction_threshold_chars=100,
+        )
+        harness = L2Harness(settings)
+        harness.chat.complete = Mock(
+            side_effect=[
+                chat_response("Known facts: dose 2.4 mg weekly; no allergy documented."),
+                chat_response("Final answer from compact memory."),
+            ]
+        )
+
+        result = harness.answer(
+            "What should I do next?",
+            history=[{"role": "user", "content": "x" * 150}],
+        )
+
+        self.assertEqual(result.answer, "Final answer from compact memory.")
+        compaction_call, generation_call = harness.chat.complete.call_args_list
+        self.assertEqual(compaction_call.kwargs["max_tokens"], 1500)
+        generation_messages = generation_call.args[0]
+        self.assertIn("[Compressed conversation memory", generation_messages[1]["content"])
+        self.assertIn("2.4 mg weekly", generation_messages[1]["content"])
 
     def test_compact_history_preserves_public_eval_length_when_short(self):
         history = [
