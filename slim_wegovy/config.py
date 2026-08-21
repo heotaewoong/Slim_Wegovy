@@ -18,25 +18,26 @@ class Settings:
     mcp_url: str
     patient_api_url: str = "https://patient.hackathon.lunit.io"
     patient_model: str = "patient-simulator-ko"
-    retrieval_max_turns: int = 8
-    generation_max_turns: int = 6
-    max_tool_result_chars: int = 24_000
+    mcp_protocol_version: str = "2025-06-18"
+    retrieval_max_turns: int = 6
+    generation_max_turns: int = 3
+    max_tool_result_chars: int = 3_500
+    max_completion_tokens: int = 1_024
 
 
 def load_settings() -> Settings:
     load_dotenv(ROOT_DIR / ".env")
 
-    api_url = os.environ.get("LUNIT_FM_API_URL", "").rstrip("/")
+    api_url = os.environ.get("LUNIT_FM_API_URL", "https://model.hackathon.lunit.io").rstrip("/")
     api_key = os.environ.get("LUNIT_FM_API_KEY", "")
-    model = os.environ.get("LUNIT_FM_MODEL", "")
+    model = os.environ.get("LUNIT_FM_MODEL", "Lunit/L2-preview")
     mcp_url = os.environ.get("LUNIT_MCP_URL", "https://mcp.hackathon.lunit.io/mcp")
+    mcp_protocol_version = os.environ.get("MCP_PROTOCOL_VERSION", "2025-06-18")
 
     missing = [
         name
         for name, value in (
-            ("LUNIT_FM_API_URL", api_url),
             ("LUNIT_FM_API_KEY", api_key),
-            ("LUNIT_FM_MODEL", model),
         )
         if not value
     ]
@@ -48,4 +49,5 @@ def load_settings() -> Settings:
         lunit_api_key=api_key,
         lunit_model=model,
         mcp_url=mcp_url,
+        mcp_protocol_version=mcp_protocol_version,
     )

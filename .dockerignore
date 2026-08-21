@@ -1,9 +1,10 @@
-.env
 .git
-.gitignore
+.codex
+.env
 .venv
-.uv-cache
 __pycache__
 *.py[cod]
-data/runs
-README.md
+*.log
+data
+mine
+tests

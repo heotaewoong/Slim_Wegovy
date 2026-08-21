@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from slim_wegovy.config import load_settings
@@ -10,6 +11,9 @@ from slim_wegovy.patient import PatientSimulator
 
 
 def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
     parser = argparse.ArgumentParser(description="Run the Slim Wegovy L2 harness.")
     sub = parser.add_subparsers(dest="command", required=True)
 

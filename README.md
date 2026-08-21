@@ -11,13 +11,14 @@ L2는 범용 chat model처럼 한 번 호출해서 끝내는 모델이 아니라
 
 ## Setup
 
-`.env`에 다음 값이 필요합니다.
+`.env`에는 API key가 필요합니다. 나머지는 아래 값이 기본값입니다.
 
 ```bash
 LUNIT_FM_API_URL=https://model.hackathon.lunit.io
 LUNIT_FM_API_KEY=...
 LUNIT_FM_MODEL=Lunit/L2-preview
 LUNIT_MCP_URL=https://mcp.hackathon.lunit.io/mcp
+MCP_PROTOCOL_VERSION=2025-06-18
 ```
 
 설치:
@@ -59,19 +60,11 @@ uv run slim-wegovy serve --host 127.0.0.1 --port 8000
 
 브라우저에서 `http://127.0.0.1:8000`을 엽니다.
 
-만약 껐다 켜야하면
-```bash
-lsof -nP -iTCP:8000 -sTCP:LISTEN
-kill <pid>
-```
-
 - `Send`: 직접 입력한 질문을 harness로 실행합니다.
 - `Patient`: patient simulator의 다음 질문을 입력창에 가져옵니다.
 - `Trajectory`: generation의 `retrieve_relevant_content` 호출과 retrieval MCP tool 호출을 순서대로 표시합니다.
 - `Evidence`: `finalize_retrieval` 결과와 선택된 `cite_uid` 근거를 표시합니다.
 - `Raw`: 전체 harness 결과를 JSON으로 표시합니다.
-
-대화는 multi-turn으로 동작합니다. 사용자가 후속 질문을 보내면 이전 user/assistant turn 전체가 다음 `/api/ask` 요청에 포함되고, 서버 응답의 `history`로 브라우저 상태를 갱신합니다. 브라우저 새로고침 후에도 이어서 실험할 수 있도록 `localStorage`에 history를 저장합니다. `Clear`를 누르면 저장된 history도 함께 삭제됩니다.
 
 ## Architecture
 
@@ -107,23 +100,33 @@ Retrieval 단계:
 - MCP tool 결과가 길면 `Settings.max_tool_result_chars` 기준으로 잘라 L2 context 폭주를 막습니다.
 - 현재 baseline은 citation text를 MCP 결과에서 best-effort로 수집합니다. tool별 결과 shape가 안정적으로 확인되면 `cite_uid` 파싱과 evidence normalization을 더 정교하게 분리하는 것이 다음 개선 지점입니다.
 
-## Evaluator 제출
+## Hackathon Submission
 
-제출용 서비스는 repository root의 `Dockerfile`로 빌드하며 `0.0.0.0:8000`에서 다음 OpenAI-compatible endpoint를 제공합니다.
+제출 container는 OpenAI-compatible API를 제공합니다.
 
 - `GET /v1/models`
 - `POST /v1/chat/completions`
+- 일반 JSON 및 `stream: true` SSE 응답
+- `GET /health`
 
-`chat/completions`는 evaluator가 전달한 마지막 `user` message를 현재 질문으로 처리하고, 그 앞의 user/assistant messages를 multi-turn history로 L2에 전달합니다. `.env`는 이미지에 포함하지 않으며 컨테이너 실행 시 필요한 환경변수를 주입합니다.
+로컬 build 및 실행:
 
 ```bash
-docker build -t slim-wegovy-submission:local .
+docker build -t slim-wegovy:local .
 docker run --rm -p 8000:8000 \
-  -e LUNIT_FM_API_URL="$LUNIT_FM_API_URL" \
-  -e LUNIT_FM_API_KEY="$LUNIT_FM_API_KEY" \
-  -e LUNIT_FM_MODEL="$LUNIT_FM_MODEL" \
-  -e LUNIT_MCP_URL="${LUNIT_MCP_URL:-https://mcp.hackathon.lunit.io/mcp}" \
-  slim-wegovy-submission:local
+  -e LUNIT_FM_API_KEY="lunit_..." \
+  slim-wegovy:local
 ```
 
-제출 branch는 `lunit/hackathon-submission`이며, 제출 화면에는 이 branch의 `HEAD` 전체 SHA와 `LUNIT_FM_MODEL` 값을 입력합니다.
+제출값:
+
+- Branch: `lunit/hackathon-submission`
+- Server: `0.0.0.0:8000`
+- Model: `Lunit/L2-preview`
+- Dashboard에는 최종 검증한 branch HEAD의 40자리 전체 SHA를 입력합니다.
+
+API credit을 사용하지 않는 test:
+
+```bash
+python -m unittest discover -s tests -v
+```

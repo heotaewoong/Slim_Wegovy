@@ -23,17 +23,27 @@ class L2Harness:
         retrieval_result: CitationSelection | None = None
         evidence: list[dict[str, Any]] = []
         retrieval_messages: list[dict[str, Any]] = []
+        latest_retrieval_content = ""
 
         def retrieve_relevant_content(query: str) -> str:
-            nonlocal retrieval_result, evidence, retrieval_messages
+            nonlocal retrieval_result, evidence, retrieval_messages, latest_retrieval_content
             retrieval = self.retrieve(query)
             retrieval_result = retrieval["selection"]
             evidence = retrieval["evidence"]
             retrieval_messages = retrieval["messages"]
             tool_events.extend(retrieval["tool_events"])
-            return _format_retrieval_for_generation(retrieval_result, evidence)
+            latest_retrieval_content = _format_retrieval_for_generation(retrieval_result, evidence)
+            return latest_retrieval_content
 
-        messages: list[dict[str, Any]] = [{"role": "system", "content": GENERATION_SYSTEM_PROMPT}]
+        external_instructions = [
+            str(item.get("content", ""))
+            for item in history or []
+            if item.get("role") in {"system", "developer"} and item.get("content")
+        ]
+        system_prompt = GENERATION_SYSTEM_PROMPT
+        if external_instructions:
+            system_prompt += "\n\nAdditional conversation instructions:\n" + "\n".join(external_instructions)
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         for item in history or []:
             if item.get("role") in {"user", "assistant"}:
                 messages.append({"role": item["role"], "content": item.get("content", "")})
@@ -45,6 +55,11 @@ class L2Harness:
             messages.append(_assistant_message_to_dict(msg))
 
             if not msg.tool_calls:
+                if not (msg.content or "").strip():
+                    msg = self._complete_final_answer(
+                        question, history, system_prompt, latest_retrieval_content
+                    )
+                    messages.append(_assistant_message_to_dict(msg))
                 return HarnessResult(
                     answer=msg.content or "",
                     retrieval=retrieval_result,
@@ -65,8 +80,12 @@ class L2Harness:
                     tool_events.append(ToolEvent(phase="generation", name=name, arguments=args, result=content))
                 messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": content})
 
+        final_message = self._complete_final_answer(
+            question, history, system_prompt, latest_retrieval_content
+        )
+        messages.append(_assistant_message_to_dict(final_message))
         return HarnessResult(
-            answer="죄송합니다. 답변 생성 단계가 최대 tool 호출 횟수를 초과해 중단되었습니다.",
+            answer=final_message.content or "",
             retrieval=retrieval_result,
             evidence=evidence,
             generation_messages=messages,
@@ -74,10 +93,59 @@ class L2Harness:
             tool_events=tool_events,
         )
 
+    def _complete_final_answer(
+        self,
+        question: str,
+        history: list[dict[str, str]] | None,
+        system_prompt: str,
+        retrieval_content: str,
+    ) -> Any:
+        """Get a non-empty final answer from L2 using a compact, tool-free context."""
+        final_messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+        for item in (history or [])[-6:]:
+            if item.get("role") in {"user", "assistant"}:
+                final_messages.append(
+                    {"role": item["role"], "content": _clip(str(item.get("content", "")), 2_000)}
+                )
+        final_messages.append({"role": "user", "content": question})
+        if retrieval_content:
+            final_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "아래 검색 결과만 근거로 사용해 최종 답변을 작성하세요. "
+                        "추가 도구는 호출할 수 없습니다. 근거가 부족하면 그 한계를 밝히고, "
+                        "반드시 비어 있지 않은 완결된 한국어 답변으로 끝내세요.\n\n"
+                        + retrieval_content
+                    ),
+                }
+            )
+        else:
+            final_messages.append(
+                {
+                    "role": "user",
+                    "content": "도구 없이 지금 최종 답변을 작성하세요. 반드시 비어 있지 않은 완결된 답변을 반환하세요.",
+                }
+            )
+
+        for attempt in range(3):
+            response = self.chat.complete(final_messages, tools=None, tool_choice=None)
+            msg = response.choices[0].message
+            if (msg.content or "").strip():
+                return msg
+            final_messages.append(
+                {
+                    "role": "user",
+                    "content": f"이전 응답이 비어 있었습니다(재시도 {attempt + 1}/3). 지금 완결된 최종 답변을 작성하세요.",
+                }
+            )
+        raise RuntimeError("L2 returned an empty final answer after 3 attempts")
+
     def retrieve(self, query: str) -> dict[str, Any]:
         tool_events: list[ToolEvent] = []
         evidence_by_uid: dict[str, dict[str, Any]] = {}
-        tools = [mcp_tool_to_openai_tool(tool) for tool in self._mcp_tools()] + [FINALIZE_RETRIEVAL_TOOL]
+        selected_mcp_tools = _select_mcp_tools(query, self._mcp_tools())
+        tools = [mcp_tool_to_openai_tool(tool) for tool in selected_mcp_tools] + [FINALIZE_RETRIEVAL_TOOL]
         valid_tool_names = {tool["function"]["name"] for tool in tools}
 
         messages: list[dict[str, Any]] = [
@@ -93,7 +161,7 @@ class L2Harness:
             if not msg.tool_calls:
                 messages.append(
                     {
-                        "role": "system",
+                        "role": "user",
                         "content": "Retrieval mode must end by calling finalize_retrieval. Call it now.",
                     }
                 )
@@ -150,6 +218,93 @@ def _assistant_message_to_dict(msg: Any) -> dict[str, Any]:
     return data
 
 
+_TOOL_ROUTES: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
+    (
+        ("법", "법령", "규정", "law", "legal"),
+        ("openapi_law_search", "openapi_law_list_articles", "openapi_law_get_article"),
+    ),
+    (
+        ("kcd", "질병코드", "상병코드", "진단코드", "청구코드"),
+        ("kcd_search_codes", "kcd_get_name", "openapi_hira_disease_check_code"),
+    ),
+    (
+        ("급여", "보험", "심평원", "hira", "약가", "수가", "비급여"),
+        (
+            "hira_updates_search",
+            "openapi_hira_get_drug_price",
+            "index_list_documents",
+            "index_get_relevant_nodes",
+            "index_get_page_content",
+            "index_keyword_search",
+        ),
+    ),
+    (
+        ("가이드라인", "진료지침", "권고", "guideline", "목표치"),
+        (
+            "index_list_documents",
+            "index_get_relevant_nodes",
+            "index_get_page_content",
+            "index_get_document_structure",
+            "index_keyword_search",
+        ),
+    ),
+    (
+        ("약", "의약품", "위고비", "허가", "부작용", "이상반응", "용량", "금기", "상호작용", "성분", "drug", "medication"),
+        (
+            "adr_retrieve_drug_info",
+            "openapi_mfds_get_drug_indication",
+            "openapi_mfds_check_drug_permission",
+            "openapi_mfds_find_drugs_by_ingredient",
+        ),
+    ),
+    (
+        ("논문", "연구", "pubmed", "faers", "안전성 신호", "문헌"),
+        (
+            "rag_get_all_data_sources",
+            "rag_get_data_source_detail",
+            "rag_vector_query",
+            "rag_sql_query",
+        ),
+    ),
+]
+
+_DEFAULT_TOOL_NAMES = (
+    "rag_get_all_data_sources",
+    "rag_get_data_source_detail",
+    "rag_vector_query",
+    "index_list_documents",
+    "index_get_relevant_nodes",
+    "index_get_page_content",
+)
+
+
+def _select_mcp_tools(
+    query: str, available: list[dict[str, Any]], max_tools: int = 8
+) -> list[dict[str, Any]]:
+    """Route a query to a compact MCP tool subset to stay within L2's input limit."""
+    by_name = {tool.get("name"): tool for tool in available if isinstance(tool.get("name"), str)}
+    lowered = query.casefold()
+    ordered_names: list[str] = []
+    for keywords, names in _TOOL_ROUTES:
+        if any(keyword.casefold() in lowered for keyword in keywords):
+            ordered_names.extend(names)
+    if not ordered_names:
+        ordered_names.extend(_DEFAULT_TOOL_NAMES)
+
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for name in ordered_names:
+        if name in seen or name not in by_name:
+            continue
+        selected.append(by_name[name])
+        seen.add(name)
+        if len(selected) >= max_tools:
+            break
+    if not selected:
+        selected = available[:max_tools]
+    return selected
+
+
 def _parse_tool_args(raw: str | None) -> dict[str, Any]:
     if not raw:
         return {}
@@ -168,7 +323,7 @@ def _harvest_cite_uids(content: str, tool_name: str, arguments: dict[str, Any], 
                 "cite_uid": uid,
                 "tool": tool_name,
                 "arguments": arguments,
-                "content": _clip(content, 8_000),
+                "content": _clip(content, 2_000),
             },
         )
 
@@ -194,7 +349,7 @@ def _find_cite_uids(text: str) -> list[str]:
 
 def _select_evidence(selection: CitationSelection, evidence_by_uid: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     selected = []
-    for item in selection.items:
+    for item in selection.items[:4]:
         selected.append(
             evidence_by_uid.get(
                 item.cite_uid,
@@ -205,13 +360,17 @@ def _select_evidence(selection: CitationSelection, evidence_by_uid: dict[str, di
 
 
 def _format_retrieval_for_generation(selection: CitationSelection, evidence: list[dict[str, Any]]) -> str:
+    numbered_evidence = [
+        {"citation_index": index, **item} for index, item in enumerate(evidence, start=1)
+    ]
     payload = {
         "status": selection.status,
         "note": selection.note,
         "selected_items": [item.model_dump() for item in selection.items],
-        "evidence": evidence,
+        "evidence": numbered_evidence if selection.items else [],
+        "uncited_fallback_evidence": evidence if not selection.items else [],
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    return _clip(json.dumps(payload, ensure_ascii=False, indent=2), 10_000)
 
 
 def _clip(text: str, max_chars: int) -> str:

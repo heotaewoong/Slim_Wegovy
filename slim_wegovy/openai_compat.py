@@ -29,10 +29,14 @@ class LunitChatClient:
         params: dict[str, Any] = {
             "model": self.settings.lunit_model,
             "messages": messages,
+            "max_tokens": self.settings.max_completion_tokens,
         }
         if tools is not None:
             params["tools"] = tools
             params["tool_choice"] = tool_choice or "auto"
+            # L2 has a deliberately small input window. Serial tool calls keep
+            # multiple large MCP responses from entering one follow-up turn.
+            params["parallel_tool_calls"] = False
 
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
