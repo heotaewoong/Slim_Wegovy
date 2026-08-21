@@ -1,0 +1,5 @@
+[mcp_servers.lunit_mcp]
+url = "https://mcp.hackathon.lunit.io/mcp"
+bearer_token_env_var = "LUNIT_FM_API_KEY"
+required = true
+tool_timeout_sec = 60

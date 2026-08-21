@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+
+
+@dataclass(frozen=True)
+class Settings:
+    lunit_api_url: str
+    lunit_api_key: str
+    lunit_model: str
+    mcp_url: str
+    patient_api_url: str = "https://patient.hackathon.lunit.io"
+    patient_model: str = "patient-simulator-ko"
+    retrieval_max_turns: int = 8
+    generation_max_turns: int = 6
+    max_tool_result_chars: int = 24_000
+
+
+def load_settings() -> Settings:
+    load_dotenv(ROOT_DIR / ".env")
+
+    api_url = os.environ.get("LUNIT_FM_API_URL", "").rstrip("/")
+    api_key = os.environ.get("LUNIT_FM_API_KEY", "")
+    model = os.environ.get("LUNIT_FM_MODEL", "")
+    mcp_url = os.environ.get("LUNIT_MCP_URL", "https://mcp.hackathon.lunit.io/mcp")
+
+    missing = [
+        name
+        for name, value in (
+            ("LUNIT_FM_API_URL", api_url),
+            ("LUNIT_FM_API_KEY", api_key),
+            ("LUNIT_FM_MODEL", model),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(f"Missing required environment variable(s): {', '.join(missing)}")
+
+    return Settings(
+        lunit_api_url=api_url,
+        lunit_api_key=api_key,
+        lunit_model=model,
+        mcp_url=mcp_url,
+    )
