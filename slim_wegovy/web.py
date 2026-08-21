@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from functools import lru_cache
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -25,6 +25,11 @@ _harness_lock = threading.Lock()
 @lru_cache(maxsize=1)
 def _harness() -> L2Harness:
     return L2Harness(load_settings())
+
+
+@lru_cache(maxsize=2)
+def _harness_with_key(api_key: str) -> L2Harness:
+    return L2Harness(load_settings(api_key_override=api_key))
 
 
 @lru_cache(maxsize=1)
@@ -83,7 +88,10 @@ def models() -> dict[str, Any]:
 
 
 @app.post("/v1/chat/completions")
-def chat_completions(req: ChatCompletionRequest):
+def chat_completions(
+    req: ChatCompletionRequest,
+    authorization: str | None = Header(default=None),
+):
     if not req.messages:
         return _openai_error("'messages' must be a non-empty array.", 400, "invalid_request_error")
     last_user_index = next(
@@ -99,7 +107,9 @@ def chat_completions(req: ChatCompletionRequest):
 
     try:
         with _harness_lock:
-            result = _harness().answer(question, history=req.messages[:last_user_index])
+            result = _request_harness(authorization).answer(
+                question, history=req.messages[:last_user_index]
+            )
     except RuntimeError as exc:
         return _openai_error(str(exc), 500, "configuration_error")
     except Exception as exc:
@@ -117,6 +127,7 @@ def chat_completions(req: ChatCompletionRequest):
                 "finish_reason": "stop",
             }
         ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
     if req.stream:
         return StreamingResponse(
@@ -129,6 +140,25 @@ def chat_completions(req: ChatCompletionRequest):
 
 def _model_name() -> str:
     return os.environ.get("LUNIT_FM_MODEL", "Lunit/L2-preview")
+
+
+def _request_harness(authorization: str | None) -> L2Harness:
+    try:
+        return _harness()
+    except RuntimeError as exc:
+        token = _bearer_token(authorization)
+        if token and "LUNIT_FM_API_KEY" in str(exc):
+            return _harness_with_key(token)
+        raise
+
+
+def _bearer_token(authorization: str | None) -> str:
+    if not authorization:
+        return ""
+    scheme, separator, token = authorization.partition(" ")
+    if not separator or scheme.casefold() != "bearer":
+        return ""
+    return token.strip()
 
 
 def _openai_error(message: str, status_code: int, error_type: str) -> JSONResponse:
@@ -158,6 +188,8 @@ def _completion_events(completion: dict[str, Any]) -> Iterator[str]:
     }
     yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
     yield f"data: {json.dumps(second, ensure_ascii=False)}\n\n"
+    usage = {**base, "choices": [], "usage": completion["usage"]}
+    yield f"data: {json.dumps(usage, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
 
 

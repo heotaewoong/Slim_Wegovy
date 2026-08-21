@@ -1,3 +1,4 @@
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -5,6 +6,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from slim_wegovy.web import app
+from slim_wegovy.config import load_settings
 
 
 class SubmissionApiTests(unittest.TestCase):
@@ -34,6 +36,7 @@ class SubmissionApiTests(unittest.TestCase):
                 response = client.post("/v1/chat/completions", json={"messages": messages})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["choices"][0]["message"]["content"], "17입니다.")
+        self.assertEqual(response.json()["usage"]["total_tokens"], 0)
         self.assertEqual(captured["question"], messages[-1]["content"])
         self.assertEqual(captured["history"], messages[:-1])
 
@@ -49,7 +52,30 @@ class SubmissionApiTests(unittest.TestCase):
                     content = "".join(response.iter_text())
         self.assertEqual(response.status_code, 200)
         self.assertIn("안녕하세요.", content)
+        self.assertIn('"usage"', content)
         self.assertIn("data: [DONE]", content)
+
+    def test_accepts_common_evaluation_api_key_alias(self):
+        with patch.dict(
+            os.environ,
+            {"LUNIT_FM_API_KEY": "", "LUNIT_API_KEY": "", "OPENAI_API_KEY": "alias-key"},
+            clear=False,
+        ):
+            settings = load_settings()
+        self.assertEqual(settings.lunit_api_key, "alias-key")
+
+    def test_uses_inbound_bearer_when_environment_key_is_missing(self):
+        fake = SimpleNamespace(answer=lambda question, history: SimpleNamespace(answer="ok"))
+        with patch("slim_wegovy.web._harness", side_effect=RuntimeError("Missing required environment variable(s): LUNIT_FM_API_KEY")):
+            with patch("slim_wegovy.web._harness_with_key", return_value=fake) as keyed:
+                with TestClient(app) as client:
+                    response = client.post(
+                        "/v1/chat/completions",
+                        headers={"Authorization": "Bearer injected-key"},
+                        json={"messages": [{"role": "user", "content": "안녕"}]},
+                    )
+        self.assertEqual(response.status_code, 200)
+        keyed.assert_called_once_with("injected-key")
 
     def test_rejects_empty_messages(self):
         with TestClient(app) as client:

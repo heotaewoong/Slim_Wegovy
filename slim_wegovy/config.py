@@ -29,11 +29,16 @@ class Settings:
     mcp_request_timeout_sec: int = 30
 
 
-def load_settings() -> Settings:
+def load_settings(api_key_override: str | None = None) -> Settings:
     load_dotenv(ROOT_DIR / ".env")
 
     api_url = os.environ.get("LUNIT_FM_API_URL", "https://model.hackathon.lunit.io").rstrip("/")
-    api_key = os.environ.get("LUNIT_FM_API_KEY", "")
+    api_key = (
+        api_key_override
+        or os.environ.get("LUNIT_FM_API_KEY", "")
+        or os.environ.get("LUNIT_API_KEY", "")
+        or os.environ.get("OPENAI_API_KEY", "")
+    )
     model = os.environ.get("LUNIT_FM_MODEL", "Lunit/L2-preview")
     mcp_url = os.environ.get("LUNIT_MCP_URL", "https://mcp.hackathon.lunit.io/mcp")
     mcp_protocol_version = os.environ.get("MCP_PROTOCOL_VERSION", "2025-06-18")
