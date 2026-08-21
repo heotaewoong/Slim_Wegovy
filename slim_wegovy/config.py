@@ -19,10 +19,14 @@ class Settings:
     patient_api_url: str = "https://patient.hackathon.lunit.io"
     patient_model: str = "patient-simulator-ko"
     mcp_protocol_version: str = "2025-06-18"
-    retrieval_max_turns: int = 6
-    generation_max_turns: int = 3
+    retrieval_max_turns: int = 4
+    generation_max_turns: int = 2
     max_tool_result_chars: int = 3_500
     max_completion_tokens: int = 1_024
+    lunit_timeout_sec: int = 60
+    lunit_max_retries: int = 1
+    mcp_tool_timeout_sec: int = 45
+    mcp_request_timeout_sec: int = 30
 
 
 def load_settings() -> Settings:

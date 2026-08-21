@@ -15,7 +15,7 @@ class LunitChatClient:
             api_key=settings.lunit_api_key,
             base_url=f"{settings.lunit_api_url}/v1",
             max_retries=0,
-            timeout=120,
+            timeout=settings.lunit_timeout_sec,
         )
 
     def complete(
@@ -24,8 +24,10 @@ class LunitChatClient:
         *,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | dict[str, Any] | None = "auto",
-        max_retries: int = 2,
+        max_retries: int | None = None,
     ) -> Any:
+        if max_retries is None:
+            max_retries = self.settings.lunit_max_retries
         params: dict[str, Any] = {
             "model": self.settings.lunit_model,
             "messages": messages,
@@ -42,7 +44,12 @@ class LunitChatClient:
         for attempt in range(max_retries + 1):
             try:
                 return self.client.chat.completions.create(**params)
-            except Exception as exc:
+            except (
+                openai.APIConnectionError,
+                openai.APITimeoutError,
+                openai.InternalServerError,
+                openai.RateLimitError,
+            ) as exc:
                 last_exc = exc
                 if attempt >= max_retries:
                     break

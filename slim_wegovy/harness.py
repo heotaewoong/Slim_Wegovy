@@ -128,7 +128,7 @@ class L2Harness:
                 }
             )
 
-        for attempt in range(3):
+        for attempt in range(2):
             response = self.chat.complete(final_messages, tools=None, tool_choice=None)
             msg = response.choices[0].message
             if (msg.content or "").strip():
@@ -136,10 +136,10 @@ class L2Harness:
             final_messages.append(
                 {
                     "role": "user",
-                    "content": f"이전 응답이 비어 있었습니다(재시도 {attempt + 1}/3). 지금 완결된 최종 답변을 작성하세요.",
+                    "content": f"이전 응답이 비어 있었습니다(재시도 {attempt + 1}/2). 지금 완결된 최종 답변을 작성하세요.",
                 }
             )
-        raise RuntimeError("L2 returned an empty final answer after 3 attempts")
+        raise RuntimeError("L2 returned an empty final answer after 2 attempts")
 
     def retrieve(self, query: str) -> dict[str, Any]:
         tool_events: list[ToolEvent] = []
@@ -197,10 +197,18 @@ class L2Harness:
                         tool_events.append(ToolEvent(phase="retrieval", name=name, arguments=args, result=content, error=content))
                 messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": content})
 
-        selection = CitationSelection(status="partial" if evidence_by_uid else "no_evidence", items=[], note="retrieval tool-call budget exhausted")
+        fallback_items = [
+            {"cite_uid": uid, "relevance_score": 0.5}
+            for uid in list(evidence_by_uid)[:4]
+        ]
+        selection = finalize_retrieval(
+            status="partial" if fallback_items else "no_evidence",
+            items=fallback_items,
+            note="retrieval tool-call time budget exhausted",
+        )
         return {
             "selection": selection,
-            "evidence": list(evidence_by_uid.values())[:8],
+            "evidence": _select_evidence(selection, evidence_by_uid),
             "messages": messages,
             "tool_events": tool_events,
         }

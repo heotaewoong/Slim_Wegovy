@@ -61,7 +61,11 @@ class StreamableHttpMcpClient:
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
         self.initialize()
-        result = self._request("tools/call", {"name": name, "arguments": arguments}, timeout=90)
+        result = self._request(
+            "tools/call",
+            {"name": name, "arguments": arguments},
+            timeout=self.settings.mcp_tool_timeout_sec,
+        )
         chunks: list[str] = []
         content = stringify_mcp_content(result.get("content", []))
         if content:
@@ -87,8 +91,10 @@ class StreamableHttpMcpClient:
         return headers
 
     def _request(
-        self, method: str, params: dict[str, Any] | None = None, timeout: int = 60
+        self, method: str, params: dict[str, Any] | None = None, timeout: int | None = None
     ) -> dict[str, Any]:
+        if timeout is None:
+            timeout = self.settings.mcp_request_timeout_sec
         request_id = self._next_id()
         payload: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
         if params is not None:
@@ -119,7 +125,7 @@ class StreamableHttpMcpClient:
             self.settings.mcp_url,
             json=payload,
             headers=self._message_headers(method),
-            timeout=30,
+            timeout=min(self.settings.mcp_request_timeout_sec, 15),
         )
         response.raise_for_status()
         self._capture_session_id(response)

@@ -9,9 +9,9 @@ from slim_wegovy.schemas import CitationSelection
 
 
 class FakeToolCall:
-    def __init__(self):
+    def __init__(self, name="unexpected_tool", arguments="{}"):
         self.id = "call-1"
-        self.function = SimpleNamespace(name="unexpected_tool", arguments="{}")
+        self.function = SimpleNamespace(name=name, arguments=arguments)
 
     def model_dump(self):
         return {
@@ -42,6 +42,10 @@ class HarnessTests(unittest.TestCase):
         call = client.client.chat.completions.create.call_args
         self.assertFalse(call.kwargs["parallel_tool_calls"])
         self.assertEqual(call.kwargs["max_tokens"], 1024)
+        self.assertEqual(settings.retrieval_max_turns, 4)
+        self.assertEqual(settings.generation_max_turns, 2)
+        self.assertEqual(settings.lunit_timeout_sec, 60)
+        self.assertEqual(settings.lunit_max_retries, 1)
 
     def test_generation_evidence_payload_is_bounded(self):
         selection = CitationSelection(
@@ -65,6 +69,38 @@ class HarnessTests(unittest.TestCase):
         names = [tool["name"] for tool in selected]
         self.assertEqual(names, ["adr_retrieve_drug_info", "openapi_mfds_get_drug_indication"])
         self.assertNotIn("openapi_law_search", names)
+
+    def test_retrieval_budget_preserves_collected_citations(self):
+        settings = Settings(
+            lunit_api_url="https://model.example",
+            lunit_api_key="lunit_test",
+            lunit_model="Lunit/L2-preview",
+            mcp_url="https://mcp.example/mcp",
+            retrieval_max_turns=1,
+        )
+        harness = L2Harness(settings)
+        harness._mcp_tools_cache = [
+            {
+                "name": "adr_retrieve_drug_info",
+                "description": "drug info",
+                "inputSchema": {"type": "object", "properties": {}},
+            }
+        ]
+        harness.chat.complete = Mock(
+            return_value=chat_response(
+                None,
+                [FakeToolCall("adr_retrieve_drug_info", '{"query":"위고비"}')],
+            )
+        )
+        harness.mcp.call_tool = Mock(
+            return_value='{"cite_uid":"cite-drug-1","content":"근거"}'
+        )
+
+        retrieval = harness.retrieve("위고비 이상반응")
+
+        self.assertEqual(retrieval["selection"].status, "partial")
+        self.assertEqual(retrieval["selection"].items[0].cite_uid, "cite-drug-1")
+        self.assertEqual(retrieval["evidence"][0]["cite_uid"], "cite-drug-1")
 
     def test_tool_budget_fallback_is_still_generated_by_l2(self):
         settings = Settings(
