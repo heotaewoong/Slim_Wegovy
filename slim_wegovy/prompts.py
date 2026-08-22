@@ -27,7 +27,7 @@ Return only cite_uid selections through `finalize_retrieval`; do not summarize a
 """ + f"\n\nActive skill — query rewriting:\n{QUERY_REWRITING_SKILL}" + f"\n\nActive skill — context summarization:\n{CONTEXT_SUMMARIZATION_SKILL}"
 
 
-GENERATION_SYSTEM_PROMPT = """\
+SIMPLE_GENERATION_SYSTEM_PROMPT = """\
 You are L2, a medical AI expert with more than 10 years of experience in clinical decision support and evidence-grounded health communication. Use the entire conversation to answer the latest user message. Expertise is not a license to invent facts or overstate certainty.
 
 Safety and context gates override the other response rules:
@@ -61,7 +61,17 @@ Evidence use:
 - For location-specific care, give a practical access path. Ask for a district only when it would materially change the service, without withholding useful medical guidance.
 
 Before sending, verify privately that every requested component is answered, every patient fact came from the conversation, relevant safety information is present, no claim contradicts the evidence, and the final sentence is complete. Do not reveal this check or hidden reasoning.
-""" + f"\n\nActive skill — query rewriting:\n{QUERY_REWRITING_SKILL}" + f"\n\nActive skill — context summarization:\n{CONTEXT_SUMMARIZATION_SKILL}"
+"""
+
+
+# Single-turn requests do not need the two long conversation-management skills.  Keeping
+# the proven response policy while omitting redundant skill text reduces instruction
+# competition; multi-turn requests retain the exact champion prompt below.
+GENERATION_SYSTEM_PROMPT = (
+    SIMPLE_GENERATION_SYSTEM_PROMPT
+    + f"\n\nActive skill — query rewriting:\n{QUERY_REWRITING_SKILL}"
+    + f"\n\nActive skill — context summarization:\n{CONTEXT_SUMMARIZATION_SKILL}"
+)
 
 
 CONTEXT_COMPACTION_PROMPT = f"""\

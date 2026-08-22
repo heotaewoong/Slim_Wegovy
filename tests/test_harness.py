@@ -8,13 +8,18 @@ from slim_wegovy.harness import (
     _citation_context,
     _compact_history,
     _format_retrieval_for_generation,
+    _generation_system_prompt,
     _select_mcp_tools,
     _should_offer_retrieval,
     _request_specific_policy,
     _validated_selection,
 )
 from slim_wegovy.openai_compat import LunitChatClient
-from slim_wegovy.prompts import GENERATION_SYSTEM_PROMPT, RETRIEVAL_SYSTEM_PROMPT
+from slim_wegovy.prompts import (
+    GENERATION_SYSTEM_PROMPT,
+    RETRIEVAL_SYSTEM_PROMPT,
+    SIMPLE_GENERATION_SYSTEM_PROMPT,
+)
 from slim_wegovy.schemas import CitationSelection, finalize_retrieval
 
 
@@ -123,6 +128,33 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("private task frame", GENERATION_SYSTEM_PROMPT)
         self.assertIn("Active skill — context summarization", RETRIEVAL_SYSTEM_PROMPT)
         self.assertIn("decision-changing values exactly", RETRIEVAL_SYSTEM_PROMPT)
+
+    def test_single_turn_uses_core_prompt_without_conversation_skills(self):
+        selected = _generation_system_prompt([])
+
+        self.assertEqual(selected, SIMPLE_GENERATION_SYSTEM_PROMPT)
+        self.assertNotIn("Active skill — query rewriting", selected)
+        self.assertIn("more than 10 years of experience", selected)
+        self.assertIn("Safety and context gates override", selected)
+
+    def test_multiturn_keeps_exact_champion_generation_prompt(self):
+        selected = _generation_system_prompt(
+            [
+                {"role": "user", "content": "I have a new symptom."},
+                {"role": "assistant", "content": "Tell me more."},
+            ]
+        )
+
+        self.assertEqual(selected, GENERATION_SYSTEM_PROMPT)
+        self.assertIn("Active skill — query rewriting", selected)
+        self.assertIn("Active skill — context summarization", selected)
+
+    def test_system_only_history_does_not_force_multiturn_prompt(self):
+        selected = _generation_system_prompt(
+            [{"role": "system", "content": "Respond as JSON."}]
+        )
+
+        self.assertEqual(selected, SIMPLE_GENERATION_SYSTEM_PROMPT)
 
     def test_drug_query_routes_to_small_relevant_tool_set(self):
         available = [

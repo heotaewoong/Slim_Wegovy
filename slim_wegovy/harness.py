@@ -12,6 +12,7 @@ from slim_wegovy.prompts import (
     CONTEXT_COMPACTION_PROMPT,
     GENERATION_SYSTEM_PROMPT,
     RETRIEVAL_SYSTEM_PROMPT,
+    SIMPLE_GENERATION_SYSTEM_PROMPT,
     retrieval_user_prompt,
 )
 from slim_wegovy.schemas import CitationSelection, HarnessResult, ToolEvent, finalize_retrieval
@@ -96,7 +97,7 @@ class L2Harness:
             for item in history or []
             if item.get("role") in {"system", "developer"} and item.get("content")
         ]
-        system_prompt = GENERATION_SYSTEM_PROMPT
+        system_prompt = _generation_system_prompt(history)
         if external_instructions:
             system_prompt += "\n\nAdditional conversation instructions:\n" + "\n".join(external_instructions)
         request_policy = _request_specific_policy(question)
@@ -911,6 +912,22 @@ _ALTITUDE_TRAVEL_QUERY = re.compile(
     r"(고산|고도병|산악병|쿠스코|라파스|등반)",
     flags=re.IGNORECASE,
 )
+
+
+def _generation_system_prompt(
+    history: list[dict[str, str]] | None,
+) -> str:
+    """Use the compact core policy only when no conversational memory is needed."""
+    has_conversation_history = any(
+        item.get("role") in {"user", "assistant"}
+        and bool(str(item.get("content", "")).strip())
+        for item in history or []
+    )
+    return (
+        GENERATION_SYSTEM_PROMPT
+        if has_conversation_history
+        else SIMPLE_GENERATION_SYSTEM_PROMPT
+    )
 
 
 def _request_specific_policy(question: str) -> str:
