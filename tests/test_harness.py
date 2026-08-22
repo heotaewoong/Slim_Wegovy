@@ -129,13 +129,16 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("Active skill — context summarization", RETRIEVAL_SYSTEM_PROMPT)
         self.assertIn("decision-changing values exactly", RETRIEVAL_SYSTEM_PROMPT)
 
-    def test_single_turn_uses_core_prompt_without_conversation_skills(self):
+    def test_single_turn_uses_evaluated_distilled_v2_prompt(self):
         selected = _generation_system_prompt([])
 
         self.assertEqual(selected, SIMPLE_GENERATION_SYSTEM_PROMPT)
-        self.assertNotIn("Active skill — query rewriting", selected)
+        self.assertNotEqual(selected, GENERATION_SYSTEM_PROMPT)
+        self.assertLess(len(selected), len(GENERATION_SYSTEM_PROMPT))
+        self.assertIn("Active skill — query rewriting (distilled)", selected)
         self.assertIn("more than 10 years of experience", selected)
-        self.assertIn("Safety and context gates override", selected)
+        self.assertIn("Safety and necessary context", selected)
+        self.assertIn("complete decision-relevant content", selected)
 
     def test_multiturn_keeps_exact_champion_generation_prompt(self):
         selected = _generation_system_prompt(
